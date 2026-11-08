@@ -3,3 +3,4 @@
 __pycache__/
 demo/*.db
 tests/__pycache__/
+eval/last_report.json
