@@ -458,3 +458,76 @@ def test_accept_persists_through_hermes_config_without_pyyaml(monkeypatch, tmp_p
     out = allowlist._merge_config_yaml("docker stop *")
     assert "config.yaml allowlist += docker stop *" in out
     assert saved["command_allowlist"] == ["git status *", "docker stop *"]
+
+
+def test_unidentified_chat_approval_is_not_learned(tmp_path, monkeypatch):
+    monkeypatch.setattr("habit.runtime.is_messaging_surface", lambda: True)
+    h = Habit(config=lambda: {"mode": "enforce", "threshold": 1},
+              store_factory=_store, project_root=str(tmp_path))
+    for choice in ("once", "deny"):
+        h.on_post_approval_response(command="pytest a.py", choice=choice)
+        h.on_post_approval_response(command="pytest a.py", choice=choice, approver_id="  ")
+    assert h._db().last_event() is None
+    assert not h._db().list_proposals()
+
+
+def test_remove_uses_public_config_and_preserves_other_rules(monkeypatch):
+    import sys
+    import types
+    saved = {}
+    fake = types.ModuleType("hermes_cli.config")
+    fake.load_config = lambda: {"command_allowlist": ["pytest *", "git status *"], "other": 42}
+    fake.save_config = lambda cfg: saved.update(cfg)
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", fake)
+    assert remove_habit_entries(["pytest *"]) == 1
+    assert saved == {"command_allowlist": ["git status *"], "other": 42}
+
+
+def test_accept_save_failure_keeps_proposal_pending(tmp_path, monkeypatch):
+    import sys
+    import types
+    h = Habit(config=lambda: {"mode": "enforce", "threshold": 1},
+              store_factory=_store, project_root=str(tmp_path))
+    monkeypatch.setattr("habit.runtime.is_messaging_surface", lambda: False)
+    h.on_post_approval_response(command="pytest a.py", choice="once")
+    prop = h._db().list_proposals()[0]
+    fake = types.ModuleType("hermes_cli.config")
+    fake.load_config = lambda: {"command_allowlist": []}
+    def fail_save(cfg):
+        raise OSError("simulated disk failure")
+    fake.save_config = fail_save
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", fake)
+    assert "simulated disk failure" in h.command("accept " + str(prop["id"]))
+    assert h._db().get_proposal(prop["id"])["status"] == "pending"
+    assert not h._db().is_pattern_promoted("pytest *")
+
+
+def test_surface_classification_unknown_is_messaging(monkeypatch):
+    from habit import owner_gate
+    monkeypatch.delenv("HERMES_PLATFORM", raising=False)
+    for platform, expected in (("matrix", True), ("telegram", True),
+                               ("future-chat", True), ("cli", False), ("", False)):
+        monkeypatch.setattr(owner_gate, "_session_env", lambda key, default="", p=platform:
+                            p if key == "HERMES_SESSION_PLATFORM" else "")
+        assert owner_gate.is_messaging_surface() is expected
+
+
+def test_smart_approver_events_never_influence_learning(tmp_path, monkeypatch):
+    monkeypatch.setattr("habit.runtime.is_messaging_surface", lambda: False)
+    h = Habit(config=lambda: {"mode": "enforce", "threshold": 1},
+              store_factory=_store, project_root=str(tmp_path))
+    for verdict in ("approve", "deny"):
+        # Actual Hermes 0.23 payload plus independently surviving markers.
+        for markers in (
+            {"choice": "smart_" + verdict, "decided_by": "aux_llm", "surface": "smart"},
+            {"choice": "smart_" + verdict},
+            {"choice": "once" if verdict == "approve" else "deny", "decided_by": "aux_llm"},
+            {"choice": "once" if verdict == "approve" else "deny", "surface": "smart"},
+            {"choice": "once" if verdict == "approve" else "deny", "source": "aux_llm"},
+        ):
+            h.on_post_approval_response(command="pytest a.py", **markers)
+    assert h._db().last_event() is None
+    assert not h._db().list_proposals()
+    # An actual human decision after escalation remains learnable.
+    h.on_post_approval_response(command="pytest a.py", choice="once", surface="cli")
+    assert len(h._db().list_proposals()) == 1

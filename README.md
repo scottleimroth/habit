@@ -34,7 +34,7 @@ Unattended runs (cron, gateway with no person, YOLO/oneshot) never call accept �
 
 ### Messaging gateway (Telegram / Discord / …)
 
-`/habit` is registered via `ctx.register_command`, so the same slash commands work on the gateway. On Telegram, type `/habit accept 1` (or `/habit_accept` autocomplete forms Hermes may expose). The reply text comes back in the chat. Approvals you click in the gateway still feed Habit’s counters; only the explicit accept writes the allowlist.
+`/habit` is registered via `ctx.register_command`, so the same slash commands work on the gateway. On Telegram, type `/habit accept 1` (or `/habit_accept` autocomplete forms Hermes may expose). The reply text comes back in the chat. Gateway approvals count only when Hermes supplies an approver identity. Unidentified chat approvals (including Hermes 0.23 Matrix/Telegram events) are ignored. Local keyboard approvals still count. Only explicit accept writes the allowlist.
 
 ### Owner-lock (gateway)
 
@@ -75,7 +75,8 @@ Accept broad patterns only where you trust the project: `pytest *` runs the proj
 ## Install
 
 ```bash
-# symlink / copy into $HERMES_HOME/plugins/habit && enable
+# Requires installed Hermes 0.23.0 or newer.
+hermes plugins install https://github.com/scottleimroth/habit --no-enable
 hermes plugins enable habit
 hermes plugins doctor habit
 # leave observe until you want proposals:
@@ -91,15 +92,18 @@ hermes config set plugins.entries.habit.settings.threshold 3
 /habit uninstall
 ```
 
-Then `hermes plugins disable habit`.
+Then `hermes plugins disable habit`. Allowlist edits take effect on the next approval check in Hermes 0.23 and survive a restart. Removal does not stop an already-running command, revoke a separate session approval, or remove another overlapping allowlist rule.
 
 ## Safety / disclosure
 
 - Observer hooks only — if Habit errors, Hermes asks as usual.
+- Smart/AI approver decisions are never learned. Hermes 0.23 identifies them with `surface=smart`, `decided_by=aux_llm`, and `choice=smart_approve|smart_deny`; any one marker is enough to ignore the event. Human decisions after escalation still count.
 - **Never auto-writes `command_allowlist`.** Human `/habit accept` only.
 - Never proposes the never-auto set.
 - No telemetry. Local SQLite via `plugin_db`. No secrets from disk.
-- Disclosure: after accept, Habit writes `command_allowlist` in the active `HERMES_HOME` (official Always path).
+- Disclosure: accept and removal persist `command_allowlist` through `hermes_cli.config.load_config` / `save_config`. Hermes 0.23 has no public single-entry revocation helper; its bulk saver merges grants instead of replacing the list. Habit does not write private approval state or override core functions.
+- Non-plugin-API dependencies: `gateway.session_context.get_session_env` reads caller identity and surface fields (read-only). Habit classifies unknown surfaces as messaging using its own local allowlist of keyboard/service surfaces. This context reader and config persistence are Hermes implementation helpers, not stable plugin context APIs. Next-check synchronisation was tested on 0.23.0. No underscore-prefixed core helpers are imported.
+- Config write errors are reported, with no raw-YAML fallback. Accept stays pending if saving fails. Keep allowlist edits serial: read/modify/save is not a cross-process transaction.
 
 ## Develop
 
@@ -111,4 +115,4 @@ HERMES_HOME=... hermes plugins doctor habit
 HERMES_HOME=... hermes plugins validate .
 ```
 
-See `INSTALL.md`, `DEMO.md`, `CHANGELOG.md`, `catalog-draft/CHECKLIST.md`.
+See [installation details](INSTALL.md) and [change history](CHANGELOG.md).

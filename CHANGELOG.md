@@ -1,3 +1,9 @@
+## 0.1.2
+
+- Persist allowlist edits through public config helpers only, without private-state mutation.
+- Ignore unidentified chat approvals and built-in smart/AI approver decisions.
+- Require tested Hermes 0.23.0 behaviour; clarify installation, dependencies and removal limits.
+
 # Changelog
 
 ## 0.1.1 — 2026-11-05

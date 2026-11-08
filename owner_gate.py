@@ -77,11 +77,8 @@ def _session_env(name: str, default: str = "") -> str:
 
 def is_messaging_surface() -> bool:
     """True when this slash invocation is on a human messaging channel."""
-    try:
-        from gateway.session_context import session_is_messaging_surface
-        return bool(session_is_messaging_surface())
-    except Exception:
-        pass
+    # Read the session fields instead of depending on Hermes's private
+    # surface-classification helper. Unknown surfaces remain messaging.
     import os
     platform = (
         os.environ.get("HERMES_PLATFORM")

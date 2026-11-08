@@ -23,7 +23,7 @@ from .patterns import generalize, matches_learned
 from .policy import after_decision, ask_reason
 from .store import Decision, HabitStore
 from .never_auto import is_never_auto, never_auto_reason
-from .owner_gate import check_owner_lock
+from .owner_gate import check_owner_lock, is_messaging_surface
 
 log = logging.getLogger("plugin.habit")
 
@@ -117,8 +117,18 @@ class Habit:
             command = _event_command(event)
             pattern_key = str(event.get("pattern_key") or event.get("description") or "")
             choice = str(event.get("choice") or "").lower().strip()
+            # Hermes 0.23 approval_smart emits all three markers. Treat any
+            # one as sufficient, so partial payloads cannot become human votes.
+            provenance = {str(event.get(key) or "").strip().lower()
+                          for key in ("decided_by", "source", "surface")}
+            if choice.startswith("smart_") or provenance & {"aux_llm", "smart"}:
+                return
             decided_by = str(event.get("decided_by") or event.get("source") or "")
-            user_id = str(event.get("user_id") or event.get("approver_id") or "")
+            user_id = str(event.get("user_id") or event.get("approver_id") or "").strip()
+            # Local keyboard approvals have no sender id; chat must identify it.
+            if not user_id and is_messaging_surface():
+                log.warning("habit ignored messaging approval without approver identity")
+                return
             is_owner = event.get("is_owner")
             scope = "owner"
             if user_id and is_owner is False:
@@ -326,7 +336,7 @@ class Habit:
                     n = self._allowlist_remover(removed)
                 elif removed:
                     n = remove_habit_entries(removed)
-                return f"forgot {len(removed)} entr(y/ies); allowlist removed={n}: {removed}"
+                return f"forgot {len(removed)} entr(y/ies); allowlist removed={n}: {removed}; effective on next approval check"
             if sub == "undo":
                 undone = store.undo_last_promotion()
                 if not undone:
@@ -336,7 +346,7 @@ class Habit:
                     n = self._allowlist_remover([undone])
                 else:
                     n = remove_habit_entries([undone])
-                return f"undo: removed {undone!r} (allowlist removed={n})"
+                return f"undo: removed {undone!r} (allowlist removed={n}); effective on next approval check"
             if sub == "uninstall":
                 entries = store.habit_allowlist_entries()
                 if self._allowlist_remover:
@@ -347,7 +357,7 @@ class Habit:
                 for p in store.list_proposals("pending"):
                     store.set_proposal_status(p["id"], "rejected")
                 return (
-                    f"habit uninstall: removed {n} allowlist entr(y/ies) Habit added; "
+                    f"habit uninstall: removed {n} allowlist entr(y/ies) Habit added (effective on next approval check); "
                     f"pending proposals cleared. Disable with: hermes plugins disable habit"
                 )
             if sub == "help":

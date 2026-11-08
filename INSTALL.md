@@ -1,13 +1,14 @@
 # Install Habit on your own Hermes (for real-world testing)
 
-Works on Hermes **0.21.5** and **0.22.2** (same approval hooks + `plugin_db`).
+Requires Hermes **0.23.0 or newer**; this release was tested on 0.23.0.
 
 ## Install
 
 ```bash
-# from a clone of this repo
-hermes plugins install /path/to/habit
-# or: symlink into $HERMES_HOME/plugins/habit
+git clone https://github.com/scottleimroth/habit
+cd habit
+hermes plugins validate .
+hermes plugins install "file://$(pwd)" --no-enable
 hermes plugins enable habit
 hermes plugins doctor habit
 ```
@@ -49,3 +50,5 @@ If Habit errors, hooks swallow the exception and Hermes asks as usual. Habit nev
 ## Gateway owner-lock
 
 Mutating slash commands (`accept` / `reject` / `undo` / `forget` / `uninstall`) require the sender’s id to be in `owner_ids`. Habit reads `HERMES_SESSION_USER_ID` (and `_ALT`) from the gateway session context Hermes already sets for plugin commands. Refusals are logged at WARNING (`habit owner-lock refuse …`). Approval *recording* still separates guest vs owner scopes when hooks expose `user_id` / `is_owner`.
+
+Requires Hermes 0.23.0 or newer. Allowlist edits apply on the next approval check and survive restart. Unidentified chat approvals are ignored; local keyboard approvals still count. See README for core-helper disclosure and removal limits.
