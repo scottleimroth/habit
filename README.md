@@ -4,6 +4,8 @@
 
 ![Habit](docs/banner-hero.jpg)
 
+**Demo video (57 seconds):** https://x.com/ScottLeimroth/status/2119407230940488173
+
 
 ## Why a plugin (not a skill / prompt)
 
