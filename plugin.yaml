@@ -1,0 +1,49 @@
+name: habit
+version: 0.1.1
+description: Learns safe command patterns from your approve/deny clicks (e.g. pytest
+  *, docker stop *). After a threshold, proposes a pattern; a human must /habit
+  accept before writing Hermes command_allowlist. Never auto-approves. Never widens
+  deletes/network/secrets. Default observe.
+author: Habit contributors
+manifest_version: 2
+api_version: 1
+license: MIT
+requires_hermes: '>=0.21.5'
+tags:
+- approvals
+- safety
+- hooks
+provides_tools: []
+provides_hooks:
+- pre_approval_request
+- post_approval_response
+config_schema:
+  mode:
+    type: str
+    choices:
+    - 'off'
+    - observe
+    - enforce
+    default: observe
+    label: Mode
+    description: off = do nothing; observe = record + /habit why; enforce = after threshold, propose a safe pattern; only /habit accept writes
+      command_allowlist (human confirm). Never auto-writes. Never for never-auto.
+      Errors fall back to normal Hermes asks.
+  threshold:
+    type: int
+    default: 3
+    label: Approvals before learn
+    description: How many prior approve decisions (once/session/always) for the same
+      command fingerprint before enforce mode creates a proposal (accept still required).
+  footer:
+    type: bool
+    default: true
+    label: Show notes
+    description: When enforce proposes a command, mention it in /habit status / why.
+  owner_ids:
+    type: list
+    default: []
+    label: Owner user ids
+    description: Messaging-gateway user ids allowed to run /habit accept|reject|undo|forget|uninstall.
+      Local CLI/TUI is always allowed. Empty list + gateway = refuse all mutating commands (fail closed).
+      Missing sender id on gateway also refuses. Example Telegram numeric id as a YAML string.
