@@ -8,7 +8,7 @@ from pathlib import Path
 from habit.allowlist import add_exact_command, remove_habit_entries
 from habit.never_auto import is_never_auto
 from habit.normalize import fingerprint
-from habit.patterns import generalize, matches_learned
+from habit.patterns import exact_entry, generalize, hermes_would_match, matches_learned
 from habit.policy import after_decision
 from habit.runtime import Habit
 from habit.store import Decision, HabitStore
@@ -31,16 +31,17 @@ def test_never_auto_shapes():
     assert not is_never_auto("docker stop", "docker stop myctr")
 
 
-def test_generalize_pytest_under_project(tmp_path: Path):
-    g = generalize("pytest tests/test_a.py", str(tmp_path))
-    assert g and g.pattern == "pytest *"
-    g2 = generalize("pytest tests/test_b.py -q", str(tmp_path))
-    assert g2 and g2.pattern == "pytest *"
+def test_pytest_is_never_globbed(tmp_path: Path):
+    # `pytest *` would also allow `pytest --basetemp=<dir>`, which deletes that directory's contents.
+    assert generalize("pytest tests/test_a.py", str(tmp_path)) is None
+    assert generalize("pytest tests/test_b.py -q", str(tmp_path)) is None
 
 
-def test_generalize_git_status(tmp_path: Path):
-    g = generalize("git status", str(tmp_path))
-    assert g and g.pattern == "git status *"
+def test_git_is_never_globbed(tmp_path: Path):
+    # `git log|diff|show|shortlog *` would also allow `--output=<file>`, which writes a file.
+    for cmd in ("git status", "git status -sb", "git diff HEAD~1", "git log --oneline -5", "git show HEAD",
+                "git shortlog -s", "git branch", "git branch -a", "git rev-parse HEAD", "git describe"):
+        assert generalize(cmd, str(tmp_path)) is None, cmd
     assert generalize("git push origin main", str(tmp_path)) is None
     assert generalize("git push --force", str(tmp_path)) is None
 
@@ -50,20 +51,12 @@ def test_generalize_refuses_cat_secret(tmp_path: Path):
     assert generalize("cat /etc/passwd", str(tmp_path)) is None
 
 
-def test_generalize_cat_workspace_relative(tmp_path: Path):
+def test_cat_family_is_never_globbed(tmp_path: Path):
+    # A path glob is not path-scoped under Hermes: `cat ./*` also matches `cat ./a ~/.ssh/id_rsa`.
     (tmp_path / "readme.md").write_text("hi")
-    g = generalize("cat ./readme.md", str(tmp_path))
-    assert g and g.pattern == "cat ./*"
-    assert g.pattern != "cat *"
-
-
-def test_generalize_cat_abs_under_project(tmp_path: Path):
-    f = tmp_path / "a.txt"
-    f.write_text("x")
-    g = generalize(f"cat {f}", str(tmp_path))
-    assert g and str(tmp_path.resolve()) in g.pattern
-    assert g.pattern.startswith("cat ")
-    assert "*" in g.pattern
+    for cmd in ("cat ./readme.md", f"cat {tmp_path / 'readme.md'}", "head ./a", "tail ./a", "rg TODO ./src",
+                "grep -n x ./a", "ls ./src", "wc -l ./a", "echo hello"):
+        assert generalize(cmd, str(tmp_path)) is None, cmd
 
 
 def test_matches_learned_does_not_cover_secrets(tmp_path: Path):
@@ -83,8 +76,8 @@ def test_generalize_refuses_chmod_and_docker_run(tmp_path: Path):
 
 
 def test_generalize_python_m_pytest(tmp_path: Path):
-    g = generalize("python -m pytest tests/", str(tmp_path))
-    assert g and g.pattern == "python -m pytest *"
+    assert generalize("python -m pytest tests/", str(tmp_path)) is None
+    assert generalize("python3 -m pytest -q", str(tmp_path)) is None
 
 
 def test_policy_refuses_never_auto_even_in_enforce():
@@ -101,10 +94,10 @@ def test_policy_propose_not_promote():
         mode="enforce", command="pytest a.py", fingerprint="pytest a.py",
         pattern_key="", choice="once", approve_count_after=2,
         deny_count=0, threshold=2, already_promoted=False,
-        generalized="pytest *", generalize_reason="test runner",
+        generalized="docker stop *", generalize_reason="docker stop of any container",
     )
     assert r.action == "propose"
-    assert "pytest *" in r.reason
+    assert "docker stop *" in r.reason
     assert "accept" in r.reason.lower()
 
 
@@ -120,11 +113,14 @@ def test_runtime_proposes_not_writes(tmp_path: Path):
     h.on_post_approval_response(command="pytest tests/test_a.py", pattern_key="", choice="once")
     assert written == []
     h.on_post_approval_response(command="pytest tests/test_b.py", pattern_key="", choice="once")
-    # Threshold hit → proposal only, no allowlist write
+    # Different commands no longer pool under a glob: no proposal yet.
+    assert store.list_proposals("pending") == []
+    h.on_post_approval_response(command="pytest tests/test_a.py", pattern_key="", choice="once")
+    # Threshold hit → proposal only, no allowlist write; the exact command, not `pytest *`
     assert written == []
     pending = store.list_proposals("pending")
     assert len(pending) == 1
-    assert pending[0]["proposed_entry"] == "pytest *"
+    assert pending[0]["proposed_entry"] == "pytest tests/test_a.py"
     why = h.command("why")
     assert "pytest" in why
     assert "accept" in why.lower() or "pending" in why.lower()
@@ -139,14 +135,14 @@ def test_accept_writes_allowlist(tmp_path: Path):
         allowlist_writer=written.append,
         project_root=str(tmp_path),
     )
-    h.on_post_approval_response(command="pytest a.py", choice="once")
-    h.on_post_approval_response(command="pytest b.py", choice="once")
+    h.on_post_approval_response(command="docker stop a", choice="once")
+    h.on_post_approval_response(command="docker stop b", choice="once")
     assert written == []
     pid = store.list_proposals("pending")[0]["id"]
     out = h.command(f"accept {pid}")
     assert "accepted" in out
-    assert written == ["pytest *"]
-    assert store.is_pattern_promoted("pytest *")
+    assert written == ["docker stop *"]
+    assert store.is_pattern_promoted("docker stop *")
     assert store.list_proposals("pending") == []
 
 
@@ -233,10 +229,10 @@ def test_forget_and_undo():
     h.on_post_approval_response(command="ls ./src", pattern_key="", choice="once")
     assert written == []
     h.command("accept all")
-    assert any("ls *" == w for w in written)
+    assert written == ["ls ./src"]
     out = h.command("undo")
-    assert "ls *" in out
-    assert "ls *" in removed
+    assert "ls ./src" in out
+    assert "ls ./src" in removed
 
 
 def test_uninstall_clears_tracked():
@@ -278,10 +274,11 @@ def test_hooks_accept_kwargs():
 
 
 def test_overgeneralise_path_outside_project(tmp_path: Path):
-    g = generalize("cat ./readme.md", str(tmp_path))
-    assert g
-    assert not matches_learned("cat /etc/passwd", g.pattern, str(tmp_path))
-    assert not matches_learned("cat /home/user/.env", g.pattern, str(tmp_path))
+    entry = exact_entry("cat ./readme.md")
+    assert matches_learned("cat ./readme.md", entry, str(tmp_path))
+    assert not matches_learned("cat /etc/passwd", entry, str(tmp_path))
+    assert not matches_learned("cat /home/user/.env", entry, str(tmp_path))
+    assert not hermes_would_match("cat ./readme.md ~/.ssh/id_rsa", entry)
 
 
 def test_guest_scope_does_not_share_owner_counts(tmp_path: Path):
@@ -367,7 +364,7 @@ def test_owner_lock_local_cli_allows_accept(tmp_path: Path, monkeypatch):
     h.on_post_approval_response(command="pytest a.py", choice="once")
     out = h.command("accept all")
     assert "accepted" in out
-    assert written == ["pytest *"]
+    assert written == ["pytest a.py"]
 
 
 def test_owner_lock_gateway_owner_can_accept(tmp_path: Path, monkeypatch):
@@ -377,7 +374,7 @@ def test_owner_lock_gateway_owner_can_accept(tmp_path: Path, monkeypatch):
     h.on_post_approval_response(command="pytest a.py", choice="once")
     out = h.command("accept all")
     assert "accepted" in out
-    assert written == ["pytest *"]
+    assert written == ["pytest a.py"]
 
 
 def test_owner_lock_gateway_guest_refused(tmp_path: Path, monkeypatch):
@@ -430,7 +427,7 @@ def test_owner_lock_matches_user_id_alt(tmp_path: Path, monkeypatch):
     h, store, written = _habit_enforce(tmp_path, owner_ids=["uuid-owner"])
     h.on_post_approval_response(command="pytest a.py", choice="once")
     assert "accepted" in h.command("accept all")
-    assert written == ["pytest *"]
+    assert written == ["pytest a.py"]
 
 
 def test_normalize_owner_ids_shapes():
@@ -499,7 +496,8 @@ def test_accept_save_failure_keeps_proposal_pending(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "hermes_cli.config", fake)
     assert "simulated disk failure" in h.command("accept " + str(prop["id"]))
     assert h._db().get_proposal(prop["id"])["status"] == "pending"
-    assert not h._db().is_pattern_promoted("pytest *")
+    assert prop["proposed_entry"] == "pytest a.py"
+    assert not h._db().is_pattern_promoted("pytest a.py")
 
 
 def test_surface_classification_unknown_is_messaging(monkeypatch):
@@ -531,3 +529,120 @@ def test_smart_approver_events_never_influence_learning(tmp_path, monkeypatch):
     # An actual human decision after escalation remains learnable.
     h.on_post_approval_response(command="pytest a.py", choice="once", surface="cli")
     assert len(h._db().list_proposals()) == 1
+
+
+# ---- review of 973100ab: nothing proposed may be wider than its label --------------------------------------------
+
+_FORCE_DELETE_KEY = "git branch force delete"
+
+
+def test_three_approved_git_branch_force_deletes_propose_nothing(tmp_path: Path):
+    for cmd, key in (("git branch -D x", _FORCE_DELETE_KEY), ("git branch -D x", ""),
+                     ("git branch --delete --force x", "git branch force delete (long flags)"),
+                     ("git branch -fd x", ""), ("git -C sub branch -D x", ""), ("git branch -f main HEAD~3", "")):
+        h, store, written = _habit_enforce(tmp_path, threshold=3)
+        for _ in range(3):
+            h.on_post_approval_response(command=cmd, pattern_key=key, choice="once")
+        assert store.list_proposals("pending") == [], cmd
+        assert written == [], cmd
+        assert generalize(cmd, str(tmp_path)) is None, cmd
+        assert is_never_auto(key or None, cmd), cmd
+
+
+def test_git_branch_listing_is_proposed_exactly(tmp_path: Path):
+    h, store, written = _habit_enforce(tmp_path, threshold=3)
+    for _ in range(3):
+        h.on_post_approval_response(command="git branch -a", choice="once")
+    [p] = store.list_proposals("pending")
+    assert p["proposed_entry"] == "git branch -a"
+    assert not hermes_would_match("git branch -D x", p["proposed_entry"])
+    assert not is_never_auto(None, "git branch -d merged")  # a plain delete is not a force delete
+
+
+# Commands a person might approve. Each becomes an exact entry or, for docker lifecycle, a docker glob.
+_BENIGN = [
+    "pytest tests/test_a.py", "python -m pytest tests/", "git status", "git diff HEAD~1", "git log --oneline -5",
+    "git show HEAD:README.md", "git shortlog -s", "git branch", "git branch -a", "git rev-parse HEAD",
+    "cat ./README.md", "cat /home/user/proj/README.md", "head ./src/main.py", "tail ./logs/app.log",
+    "rg TODO ./src", "grep -n todo ./a", "ls ./src", "ls -la ./", "wc -l ./README.md", "echo hello", "pwd",
+    "ls *.py", "docker stop web_1", "docker restart worker", "docker compose stop web", "docker compose restart api",
+]
+
+# What the reviewer (and our own checks) showed a wide glob would also let through.
+_MUST_NOT_MATCH = [
+    "git branch -D x", "git branch --delete --force x", "git branch -f main HEAD~3",
+    "cat ./a ~/.ssh/id_rsa", "cat ./../../etc/shadow", "cat ./README.md /home/user/.env",
+    "git log --output=/home/user/.bashrc", "git diff --output=x", "git show --output=x HEAD",
+    "git shortlog --output=x", "pytest --basetemp=/home/user", "python -m pytest --basetemp=/home/user tests/",
+    "ls ~/.ssh", "ls x /etc/a.py", "wc ~/.ssh/id_rsa", "rg --pre=sh x ./src", "echo $OPENAI_API_KEY",
+    "docker run -d nginx", "docker exec web sh", "docker kill web", "docker compose down", "docker rm -f web",
+]
+
+
+def test_no_proposal_matches_a_wider_command_under_hermes_matching(tmp_path: Path):
+    entries = []
+    for cmd in _BENIGN:
+        h, store, written = _habit_enforce(tmp_path, threshold=1)
+        h.on_post_approval_response(command=cmd, choice="once")
+        [p] = store.list_proposals("pending")
+        entries.append(p["proposed_entry"])
+        assert hermes_would_match(cmd, p["proposed_entry"]), (cmd, p["proposed_entry"])
+    globs = {e for e in entries if generalize_glob(e)}
+    assert globs == {"docker stop *", "docker restart *", "docker compose stop *", "docker compose restart *"}
+    for entry in entries:
+        for bad in _MUST_NOT_MATCH:
+            assert not hermes_would_match(bad, entry), (entry, bad)
+
+
+def generalize_glob(entry: str) -> bool:
+    """True when Hermes would read this entry as a glob that is not a bracket-escaped literal."""
+    return "*" in entry.replace("[*]", "")
+
+
+def test_docker_glob_labels_say_any_container():
+    g = generalize("docker stop web_1")
+    assert g and g.pattern == "docker stop *" and "any container" in g.reason
+    g = generalize("docker compose restart api")
+    assert g and g.pattern == "docker compose restart *" and "any service" in g.reason
+    for cmd in ("docker --host=tcp://h stop x", "docker -H tcp://h stop x", "podman stop x", "podman stop --all",
+                "docker kill x", "docker compose down", "DOCKER_HOST=tcp://h docker stop x"):
+        assert generalize(cmd) is None, cmd
+
+
+def test_exact_entries_with_glob_characters_are_literal():
+    for cmd in ("ls *.py", "echo ?", "pytest -k 'a or b[1]'", "printf a*[b", "ls [!a]*", "x ] y"):
+        entry = exact_entry(cmd)
+        assert hermes_would_match(cmd, entry), (cmd, entry)
+        assert not hermes_would_match(cmd + " extra", entry), (cmd, entry)
+    assert exact_entry("ls *.py") == "ls [*].py"
+    assert exact_entry("printf a*[b") == "printf a[*][[]b"
+    assert exact_entry("git status") == "git status"
+    assert not hermes_would_match("ls x /etc/a.py", exact_entry("ls *.py"))
+
+
+def test_glob_character_command_round_trip(tmp_path: Path):
+    removed = []
+    store = _store()
+    written = []
+    h = Habit(
+        config=lambda: {"mode": "enforce", "threshold": 2},
+        store_factory=lambda: store,
+        allowlist_writer=written.append,
+        allowlist_remover=lambda entries: removed.extend(entries) or len(entries),
+        project_root=str(tmp_path),
+    )
+    h.on_post_approval_response(command="ls *.py", choice="once")
+    assert store.find_pending_for_command("ls *.py", str(tmp_path)) is None
+    h.on_post_approval_response(command="ls *.py", choice="once")
+    assert store.find_pending_for_command("ls *.py", str(tmp_path)) == "ls [*].py"
+    h.command("accept all")
+    assert written == ["ls [*].py"]
+    assert store.find_matching_pattern("ls *.py", str(tmp_path)) == "ls [*].py"
+    assert store.find_matching_pattern("ls x /etc/a.py", str(tmp_path)) is None
+    h.command("undo")
+    assert removed == ["ls [*].py"]
+
+
+def test_never_auto_relative_shadow_path():
+    assert is_never_auto(None, "cat ./../../etc/shadow")
+    assert is_never_auto(None, "head ../../etc/sudoers")

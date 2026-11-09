@@ -1,5 +1,5 @@
 name: habit
-version: 0.1.2
+version: 0.1.3
 description: Learns safe command patterns from your approve/deny clicks (e.g. pytest
   *, docker stop *). After a threshold, proposes a pattern; a human must /habit
   accept before writing Hermes command_allowlist. Never auto-approves. Never widens

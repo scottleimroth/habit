@@ -19,6 +19,8 @@ NEVER_AUTO_PATTERN_KEYS = frozenset({
     "execute remote content via Invoke-Expression",
     "git force push (rewrites remote history)",
     "git force push",
+    # Also covers Hermes's "(long flags)" and "(long flags, force-first)" keys through the substring rule.
+    "git branch force delete",
     "format filesystem (Format-Volume)",
     "wipe disk (Clear-Disk)",
     "dd disk wipe",
@@ -46,10 +48,17 @@ def _rxes():
         re.compile(r"git\s+push\b[^\n]*\s-f\b", re.I),
         # Any git push — refuse promote (rewrites remote; always ask)
         re.compile(r"\bgit\s+push\b", re.I),
+        # Branch force-delete or force-reset, wider than Hermes's own rule: -D (case-sensitive, as Hermes),
+        # any short-flag cluster with f (-f, -df, -fd), or --force; also with global options before `branch`
+        # (`git -C dir branch -D x`).
+        re.compile(r"\bgit\b[^\n]*\bbranch\b[^\n]*\s(?-i:-[a-zA-Z]*[Df][a-zA-Z]*)\b", re.I),
+        re.compile(r"\bgit\b[^\n]*\bbranch\b[^\n]*\s--force\b", re.I),
         # Secret / credential paths
         re.compile(r"(^|\s)(cat|head|tail|less|more|bat)\s+[^\n]*(\.ssh/|\.aws/|\.gnupg/|\.env\b|id_rsa|id_ed25519|credentials|secret|\.npmrc|\.pypirc)", re.I),
         re.compile(r"(^|\s)(cp|mv|scp|rsync)\s+[^\n]*(\.ssh/|id_rsa|id_ed25519|\.env\b|credentials)", re.I),
         re.compile(r"(^|\s)(cat|head|tail)\s+/etc/(shadow|passwd|sudoers)", re.I),
+        # The same files reached through a relative path (`cat ./../../etc/shadow`).
+        re.compile(r"(^|\s)(cat|head|tail|less|more|bat)\s+[^\n]*etc/(shadow|gshadow|sudoers)\b", re.I),
         # Privilege / wipe / format
         re.compile(r"su" + r"do\s+rm\b", re.I),
         re.compile(r"\bdd\s+.*of=/dev/", re.I),

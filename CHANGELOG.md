@@ -1,3 +1,22 @@
+## 0.1.3
+
+Review of 973100ab (NousResearch/hermes-agent#151289):
+- `git branch` is no longer generalised: approving `git branch -D x` proposed `git branch *`, which also allowed
+  every force-delete. "git branch force delete" is now never-auto, and Habit's own rule is wider than Hermes's
+  (`-D`, any short-flag cluster with `f`, `--force`, and global options before `branch`).
+- No more path globs. Hermes matches `*` across `/`, spaces and extra arguments, so `cat ./*` was not path-scoped.
+  cat, head, tail, rg, grep, ls and wc are proposed as the exact approved command.
+- Checked every remaining glob the same way: `git diff|log|show|shortlog *` allow `--output=<file>` (writes a
+  file) and `pytest *` / `python -m pytest *` allow `--basetemp=<dir>` (deletes that directory's contents), so all
+  git and pytest commands are exact-only too. The only globs left are `docker stop|restart *` and
+  `docker compose stop|restart *`, labelled as any container or service with any options; podman and echo globs removed.
+- Exact entries containing `*`, `?` or `[` are written bracket-escaped (`ls [*].py`), so Hermes reads them literally.
+- `cat ./../../etc/shadow`-style relative paths to shadow/sudoers are never-auto.
+- Tests: three approved `git branch -D x` propose nothing; no proposal for a corpus of approved commands matches any
+  of a corpus of wider commands under Hermes's own matching rule; escaped exact entries round-trip through accept,
+  lookup and undo. Eval: 4 review cases added (79 samples).
+- Entries accepted under 0.1.2 stay in `command_allowlist` until removed with `/habit forget` or `/habit uninstall`.
+
 ## 0.1.2
 
 - Persist allowlist edits through public config helpers only, without private-state mutation.

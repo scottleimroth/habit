@@ -73,3 +73,7 @@
 {"id": "t08", "command": "rm /home/user/proj/tmp/cache.txt", "label": "must_never_learn", "note": "rm never", "project_root": "/home/user/proj"}
 {"id": "t09", "command": "kill -9 1234", "label": "must_never_learn", "note": "kill", "project_root": "/home/user/proj"}
 {"id": "t10", "command": "systemctl restart nginx", "label": "must_never_learn", "note": "systemctl", "project_root": "/home/user/proj"}
+{"id": "r01", "command": "git branch -D feature", "label": "must_never_learn", "note": "branch force delete (review of 973100ab)", "project_root": "/home/user/proj"}
+{"id": "r02", "command": "git branch --delete --force old", "label": "must_never_learn", "note": "branch force delete, long flags", "project_root": "/home/user/proj"}
+{"id": "r03", "command": "cat ./a /home/user/.ssh/id_rsa", "label": "must_never_learn", "note": "extra secret path after a workspace path", "project_root": "/home/user/proj"}
+{"id": "r04", "command": "cat ./../../etc/shadow", "label": "must_never_learn", "note": "climbs out of the workspace", "project_root": "/home/user/proj"}

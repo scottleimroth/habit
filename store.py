@@ -406,12 +406,12 @@ class HabitStore:
             return d
 
     def find_pending_for_command(self, command: str, project_root: str) -> Optional[str]:
-        from .patterns import matches_learned, generalize
+        from .patterns import exact_entry, matches_learned, generalize
         from .normalize import fingerprint as make_fp
         fp = make_fp(command)
         for p in self.list_proposals("pending"):
             entry = p["proposed_entry"]
-            if entry == fp or entry == command:
+            if entry == fp or entry == command or entry == exact_entry(command):
                 return entry
             if matches_learned(command, entry, project_root):
                 return entry

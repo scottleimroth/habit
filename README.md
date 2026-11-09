@@ -53,14 +53,26 @@ plugins:
 
 ## What it may propose vs never
 
-| May propose (examples) | Never proposes |
-|------------------------|----------------|
-| `docker stop *`, `docker restart *` | Home / recursive wipe shapes |
-| `pytest *`, `python -m pytest *` | Download-and-execute pipes |
-| `git status *`, `git diff *`, `git log *` | `git push` (incl. force) |
-| Workspace-scoped `ls` / `cat` / `head` / `tail` / `rg` | Secret paths; out-of-project; shell chains |
+| May propose | Never proposes |
+|-------------|----------------|
+| `docker stop *`, `docker restart *`: stop or restart **any** container, with any stop/restart options | Home / recursive wipe shapes |
+| `docker compose stop *`, `docker compose restart *`: **any** service, with any options | Download-and-execute pipes |
+| Any other command you approved: **that exact command only** | `git push` (incl. force); `git branch` force delete or force reset |
+| | Secret paths; shell chains; `docker run`/`exec`/`rm`/`kill`, `compose down`, remote daemons |
 
-Accept broad patterns only where you trust the project: `pytest *` runs the project's own test code, and some `git diff` options can write files.
+Hermes matches an allowlist entry against the whole command line, and `*` there matches `/`, spaces and any extra
+arguments. A glob is therefore only as narrow as every option of the command behind it: `cat ./*` would also match
+`cat ./a ~/.ssh/id_rsa`, `git log *` would also allow `git log --output=<file>` (writes a file), and `pytest *` would
+also allow `pytest --basetemp=<dir>` (deletes that directory's contents). So Habit proposes a glob only for the
+container lifecycle commands above, and proposes everything else exactly as you approved it. An exact command that
+contains `*`, `?` or `[` is written with those characters bracketed (`ls [*].py`), so Hermes matches only that command.
+
+Hermes 0.23 asks for approval only on its own dangerous-command list, so Habit only ever sees those commands; in
+practice that is mostly container lifecycle and repeats of other flagged commands you keep approving.
+
+**Upgrading from 0.1.2:** entries 0.1.2 proposed and you accepted (for example `pytest *`, `git log *`, `cat ./*`)
+stay in `command_allowlist` until you remove them. `/habit status` lists them; `/habit forget <entry>` removes one
+and `/habit uninstall` removes every entry Habit added.
 
 ## Other commands
 

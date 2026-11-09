@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional
 
 from .allowlist import add_exact_command, remove_habit_entries
 from .normalize import fingerprint as make_fp
-from .patterns import generalize, matches_learned
+from .patterns import exact_entry, generalize, matches_learned
 from .policy import after_decision, ask_reason
 from .store import Decision, HabitStore
 from .never_auto import is_never_auto, never_auto_reason
@@ -161,7 +161,8 @@ class Habit:
             approve_n = store.pattern_approve_count(count_key, scope=scope) if gen else store.approve_count(fp)
             deny_n = store.pattern_deny_count(count_key, scope=scope) if gen else store.deny_count(fp)
             already = store.is_pattern_promoted(count_key) if gen else store.is_promoted(fp)
-            entry = (gen.pattern if gen else command)
+            # A glob only from generalize(); otherwise the exact command, escaped so Hermes reads it literally.
+            entry = gen.pattern if gen else exact_entry(command)
             already_proposed = store.is_entry_proposed(entry, scope=scope)
 
             result = after_decision(
