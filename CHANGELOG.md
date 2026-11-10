@@ -1,3 +1,9 @@
+## 0.1.5
+
+- `/habit status` no longer says "not posted" when Hermes's 30-second wait for `ctx.post_message` runs out. Hermes
+  keeps delivering in the background (`error == "timeout"`, handle still pending), so the message may still
+  arrive. Status now says "post still pending (slow gateway)". Test added.
+
 ## 0.1.4
 
 - Habit now tells you when it has an offer. When enforce mode creates a proposal it posts one message in the chat

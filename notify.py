@@ -84,6 +84,11 @@ class Announcer:
         if ok:
             self._record(proposal_id, "posted in chat")
             log.info("habit proposal #%d posted in chat", proposal_id)
+        elif err == "timeout":
+            # Hermes 0.23 gave up waiting after 30 s but keeps delivering; the message may still arrive.
+            self._record(proposal_id, "post still pending (slow gateway)")
+            log.warning("habit proposal #%d post still pending after Hermes's 30 s wait (slow gateway); "
+                        "it may still arrive and is in /habit proposals", proposal_id)
         else:
             self._record(proposal_id, f"not posted: {err or 'unknown error'}")
             log.warning("habit proposal #%d could not be posted in chat (%s); it is still in /habit proposals",

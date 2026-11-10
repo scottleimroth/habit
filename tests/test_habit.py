@@ -761,6 +761,23 @@ def test_notify_undelivered_local_notice_counts_as_not_posted():
     assert "not posted: not_delivered" in h.command("status")
 
 
+def test_notify_timeout_is_shown_as_pending_not_failed():
+    # Hermes 0.23 hermes_cli/plugin_messages.py: after 30 s the handle reads ok=False, error="timeout" with
+    # `pending` set, and the gateway keeps delivering, so the message may still arrive.
+    timed_out = _Handle(ok=False, error="timeout", result={
+        "ok": False, "error": "timeout",
+        "detail": "the gateway did not answer within 30s; the operation is still running and its result will "
+                  "land on this handle"})
+    timed_out.pending = True
+    h, store, _ = _notifying(poster=lambda t: timed_out)
+    for _ in range(2):
+        h.on_post_approval_response(command="docker stop web", choice="once")
+    status = h.command("status")
+    assert "post still pending (slow gateway)" in status
+    assert "not posted" not in status
+    assert len(store.list_proposals("pending")) == 1
+
+
 def test_notify_does_not_block_the_hook():
     import threading
     import time
