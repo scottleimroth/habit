@@ -1,3 +1,25 @@
+## 0.1.6
+
+Found on a live install: Hermes 0.23 fires the approval hooks for plugin `pre_tool_call` rules too, with the
+synthetic label `<terminal> (plugin approval rule)` as the command. Habit counted those, pooled different rules
+under the one label, proposed the label as an exact allowlist entry, and `/habit accept all` wrote it. It never
+matched a command, so it allowed nothing, but it was junk and misleading.
+
+- Plugin-rule approvals (`plugin_rule:` keys or the `<tool> (plugin approval rule)` label) and the other non-command
+  gates (computer_use, SSH config and protected-file writes, execute_code, MCP elicitation, editor diffs) are
+  ignored completely: never recorded, counted, proposed or posted.
+- Approvals are counted per Hermes rule (pattern_key) and per approver scope, so different rules never pool.
+- An identified approver counts as the owner only when the id is in `owner_ids`, the same rule as the owner lock.
+  Before, an identified approver with no `is_owner` flag was pooled with the local owner.
+  Non-owner approvals never lead to a proposal.
+- Exact commands with shell operators are no longer proposed (Hermes never allowlist-matches them).
+- On load, recorded plugin-rule approvals are forgotten and pending label proposals are marked ignored.
+  `/habit accept` refuses any such proposal. Accepted entries are left in `command_allowlist`; `/habit status`
+  flags the label and `/habit forget` or `/habit undo` removes it.
+- Tests: the live sequence (rm plugin rule, then tirith rule) proposes nothing; label-only detection; every
+  non-command gate; per-rule and per-approver counting; real commands still propose once; old database cleanup;
+  undo and forget remove an accepted label.
+
 ## 0.1.5
 
 - `/habit status` no longer says "not posted" when Hermes's 30-second wait for `ctx.post_message` runs out. Hermes

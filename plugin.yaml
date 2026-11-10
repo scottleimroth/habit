@@ -1,5 +1,5 @@
 name: habit
-version: 0.1.5
+version: 0.1.6
 description: Learns safe command patterns from your approve/deny clicks (e.g. pytest
   *, docker stop *). After a threshold, proposes a pattern and says so once in the chat;
   a human must /habit accept before writing Hermes command_allowlist. Never auto-approves. Never widens
@@ -33,8 +33,8 @@ config_schema:
     type: int
     default: 3
     label: Approvals before learn
-    description: How many prior approve decisions (once/session/always) for the same
-      command fingerprint before enforce mode creates a proposal (accept still required).
+    description: How many approve decisions (once/session/always) for the same command, under the same
+      Hermes rule and from the owner, before enforce mode creates a proposal (accept still required).
   footer:
     type: bool
     default: true

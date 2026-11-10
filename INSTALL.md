@@ -50,6 +50,6 @@ If Habit errors, hooks swallow the exception and Hermes asks as usual. Habit nev
 
 ## Gateway owner-lock
 
-Mutating slash commands (`accept` / `reject` / `undo` / `forget` / `uninstall`) require the sender’s id to be in `owner_ids`. Habit reads `HERMES_SESSION_USER_ID` (and `_ALT`) from the gateway session context Hermes already sets for plugin commands. Refusals are logged at WARNING (`habit owner-lock refuse …`). Approval *recording* still separates guest vs owner scopes when hooks expose `user_id` / `is_owner`.
+Mutating slash commands (`accept` / `reject` / `undo` / `forget` / `uninstall`) require the sender’s id to be in `owner_ids`. Habit reads `HERMES_SESSION_USER_ID` (and `_ALT`) from the gateway session context Hermes already sets for plugin commands. Refusals are logged at WARNING (`habit owner-lock refuse …`). When hooks expose `user_id` / `is_owner`, an approver counts as the owner only if their id is in `owner_ids` (the same rule as the owner lock) and Hermes does not mark them `is_owner: false`. Everyone else is counted separately and never produces a proposal.
 
 Requires Hermes 0.23.0 or newer. Allowlist edits apply on the next approval check and survive restart. Unidentified chat approvals are ignored; local keyboard approvals still count. See README for core-helper disclosure and removal limits.

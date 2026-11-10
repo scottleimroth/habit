@@ -24,7 +24,9 @@ from .policy import after_decision, ask_reason
 from .store import Decision, HabitStore
 from .never_auto import is_never_auto, never_auto_reason
 from .notify import Announcer, proposal_message
-from .owner_gate import check_owner_lock, is_messaging_surface
+from .gates import not_a_command
+from .patterns import has_shell_operators
+from .owner_gate import check_owner_lock, configured_owner_ids, is_messaging_surface
 
 log = logging.getLogger("plugin.habit")
 
@@ -89,6 +91,12 @@ class Habit:
                 return
             command = _event_command(event)
             pattern_key = str(event.get("pattern_key") or event.get("description") or "")
+            ignored = not_a_command(str(event.get("pattern_key") or ""), event.get("pattern_keys") or (), command)
+            if ignored:
+                self._last_ask = {"command": command, "fingerprint": "", "pattern_key": pattern_key,
+                                  "reason": f"{ignored}: Habit never learns these; Hermes asks every time",
+                                  "learned_pattern": None, "pending_proposal": None}
+                return
             fp = make_fp(command)
             store = self._db()
             learned = store.find_matching_pattern(command, self._root())
@@ -97,7 +105,7 @@ class Habit:
                 fingerprint=fp,
                 pattern_key=pattern_key,
                 command=command,
-                approve_count=store.approve_count(fp),
+                approve_count=store.approve_count(fp, pattern_key=pattern_key, scope="owner"),
                 deny_count=store.deny_count(fp),
                 promoted=store.is_promoted(fp) or bool(learned),
                 learned_pattern=learned,
@@ -128,18 +136,25 @@ class Habit:
                           for key in ("decided_by", "source", "surface")}
             if choice.startswith("smart_") or provenance & {"aux_llm", "smart"}:
                 return
+            # Plugin rules and other non-command gates: never recorded, counted, proposed or posted.
+            ignored = not_a_command(str(event.get("pattern_key") or ""), event.get("pattern_keys") or (), command)
+            if ignored:
+                log.debug("habit ignored approval (%s)", ignored)
+                return
             decided_by = str(event.get("decided_by") or event.get("source") or "")
             user_id = str(event.get("user_id") or event.get("approver_id") or "").strip()
             # Local keyboard approvals have no sender id; chat must identify it.
             if not user_id and is_messaging_surface():
                 log.warning("habit ignored messaging approval without approver identity")
                 return
+            # Same rule as the owner lock: an identified approver is the owner only when the id is in
+            # owner_ids (and Hermes does not say otherwise). Anyone else gets their own guest scope, which
+            # is counted apart and never proposes. Local keyboard approvals (no id) are the owner.
             is_owner = event.get("is_owner")
             scope = "owner"
-            if user_id and is_owner is False:
-                scope = f"guest:{user_id}"
-            elif user_id and is_owner is True:
-                scope = f"owner:{user_id}"
+            if user_id:
+                owner = is_owner is not False and user_id in configured_owner_ids(self._config)
+                scope = f"owner:{user_id}" if owner else f"guest:{user_id}"
 
             fp = make_fp(command)
             if not fp or not choice:
@@ -163,7 +178,9 @@ class Habit:
 
             threshold = int(_cfg(self._config, "threshold", 3) or 3)
             count_key = gen.pattern if gen else fp
-            approve_n = store.pattern_approve_count(count_key, scope=scope) if gen else store.approve_count(fp)
+            # Counted per rule (pattern_key) and per approver scope, so different rules or people never pool.
+            approve_n = (store.pattern_approve_count(count_key, scope=scope, pattern_key=pattern_key) if gen
+                         else store.approve_count(fp, pattern_key=pattern_key, scope=scope))
             deny_n = store.pattern_deny_count(count_key, scope=scope) if gen else store.deny_count(fp)
             already = store.is_pattern_promoted(count_key) if gen else store.is_promoted(fp)
             # A glob only from generalize(); otherwise the exact command, escaped so Hermes reads it literally.
@@ -184,8 +201,14 @@ class Habit:
                 generalized=gen.pattern if gen else None,
                 generalize_reason=gen.reason if gen else None,
             )
+            if result.action == "propose" and scope.startswith("guest:"):
+                log.info("habit did not propose for a non-owner approver (%s)", scope)
+            elif result.action == "propose" and not gen and has_shell_operators(command):
+                # Hermes never matches an allowlist entry against a command with shell operators.
+                log.info("habit did not propose %r: Hermes never allowlists commands with shell operators",
+                         command[:80])
             # Propose only — never write allowlist here (rule 12).
-            if result.action == "propose":
+            elif result.action == "propose":
                 pid, created = store.create_proposal(
                     fingerprint=fp,
                     command=command,
@@ -210,6 +233,9 @@ class Habit:
     def _accept_one(self, store: HabitStore, prop: dict) -> str:
         entry = prop["proposed_entry"]
         cmd = prop["command"]
+        if not_a_command(prop.get("pattern_key") or "", (), cmd) or not_a_command("", (), entry):
+            store.set_proposal_status(prop["id"], "ignored")
+            return f"#{prop['id']} ignored (not a shell command, Hermes asks every time): {entry}"
         if is_never_auto(prop.get("pattern_key") or "", cmd) or is_never_auto(None, entry):
             store.set_proposal_status(prop["id"], "rejected")
             return f"#{prop['id']} refused (never-auto): {entry}"
@@ -285,9 +311,12 @@ class Habit:
                 if not promos:
                     lines.append("  (none yet)")
                 for p in promos:
+                    junk = not_a_command("", (), p["allowlist_entry"])
                     lines.append(
                         f"  [{p['approve_count']}×] {p['allowlist_entry'][:100]} "
                         f"(from {p['command'][:60]})"
+                        + (" — never matches a command; remove with /habit forget " + p["allowlist_entry"]
+                           if junk else "")
                     )
                 return "\n".join(lines)
             if sub == "proposals":

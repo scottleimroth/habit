@@ -90,6 +90,7 @@ class HabitStore:
             for ddl in _SCHEMA:
                 self._conn.execute(ddl)
             self._migrate()
+            self._drop_non_command_rows()
             cutoff = time.time() - RETENTION_SECONDS
             self._conn.execute("DELETE FROM decisions WHERE created_at < ?", (cutoff,))
 
@@ -124,6 +125,21 @@ class HabitStore:
             except Exception:
                 pass
 
+    def _drop_non_command_rows(self) -> None:
+        """Before 0.1.6 Habit learned from plugin-rule and other non-command approvals. Forget those decisions
+        and mark their pending proposals ignored. Accepted entries and command_allowlist are left alone."""
+        from .gates import not_a_command
+        rows = self._conn.execute("SELECT id, pattern_key, command FROM decisions").fetchall()
+        junk = [(r[0],) for r in rows if not_a_command(r[1] or "", (), r[2] or "")]
+        if junk:
+            self._conn.executemany("DELETE FROM decisions WHERE id=?", junk)
+        rows = self._conn.execute(
+            "SELECT id, pattern_key, command, proposed_entry FROM proposals WHERE status='pending'").fetchall()
+        junk = [(r[0],) for r in rows
+                if not_a_command(r[1] or "", (), r[2] or "") or not_a_command("", (), r[3] or "")]
+        if junk:
+            self._conn.executemany("UPDATE proposals SET status='ignored' WHERE id=?", junk)
+
     def record_decision(self, d: Decision) -> None:
         now = d.created_at or time.time()
         with self._lock, self._conn:
@@ -150,14 +166,22 @@ class HabitStore:
             (kind, fp, command, pattern_key, choice, detail, pattern, now),
         )
 
-    def approve_count(self, fingerprint: str) -> int:
+    def approve_count(self, fingerprint: str, *, pattern_key: Optional[str] = None,
+                      scope: Optional[str] = None) -> int:
+        """Approvals of this command. With pattern_key / scope, only those under the same Hermes rule and
+        approver scope count, so different rules or people never pool into one proposal."""
         if not fingerprint:
             return 0
+        sql = "SELECT COUNT(*) FROM decisions WHERE fingerprint=? AND choice IN ('once','session','always')"
+        args: list = [fingerprint]
+        if pattern_key is not None:
+            sql += " AND pattern_key=?"
+            args.append(pattern_key)
+        if scope is not None:
+            sql += " AND scope=?"
+            args.append(scope)
         with self._lock, self._conn:
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM decisions WHERE fingerprint=? AND choice IN ('once','session','always')",
-                (fingerprint,),
-            ).fetchone()
+            row = self._conn.execute(sql, args).fetchone()
         return int(row[0]) if row else 0
 
     def deny_count(self, fingerprint: str) -> int:
@@ -170,15 +194,18 @@ class HabitStore:
             ).fetchone()
         return int(row[0]) if row else 0
 
-    def pattern_approve_count(self, pattern: str, scope: str = "owner") -> int:
+    def pattern_approve_count(self, pattern: str, scope: str = "owner",
+                              pattern_key: Optional[str] = None) -> int:
         if not pattern:
             return 0
+        sql = ("SELECT COUNT(*) FROM decisions WHERE generalized=? AND scope=? "
+               "AND choice IN ('once','session','always')")
+        args: list = [pattern, scope]
+        if pattern_key is not None:
+            sql += " AND pattern_key=?"
+            args.append(pattern_key)
         with self._lock, self._conn:
-            row = self._conn.execute(
-                "SELECT COUNT(*) FROM decisions WHERE generalized=? AND scope=? "
-                "AND choice IN ('once','session','always')",
-                (pattern, scope),
-            ).fetchone()
+            row = self._conn.execute(sql, args).fetchone()
         return int(row[0]) if row else 0
 
     def pattern_deny_count(self, pattern: str, scope: str = "owner") -> int:

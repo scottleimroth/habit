@@ -881,3 +881,163 @@ def test_register_uses_public_post_message():
     assert h is not None
     assert isinstance(h._announcer._poster("hi"), _Handle)
     assert set(ctx.hooks) == {"pre_approval_request", "post_approval_response"}
+
+
+# ---- 0.1.6: plugin-rule and other non-command approvals are never learned; counts are per rule and approver --
+
+PLUGIN_LABEL = "<terminal> (plugin approval rule)"  # tools/approval.py request_tool_approval, Hermes 0.23
+
+
+def _plugin_rule(h, rule, **kw):
+    # Exactly what Hermes 0.23 hands the hooks for a plugin pre_tool_call {"action": "approve"} escalation.
+    h.on_post_approval_response(command=PLUGIN_LABEL, description=f"{rule} flagged this", choice="once",
+                                pattern_key=f"plugin_rule:{rule}", pattern_keys=[f"plugin_rule:{rule}"],
+                                session_key="s1", surface="gateway", **kw)
+
+
+def test_neuron_sequence_rm_rule_then_tirith_rule_proposes_nothing():
+    h, store, posted = _notifying(threshold=2)
+    _plugin_rule(h, "delete file (rm)")
+    _plugin_rule(h, "tirith:plain-http-curl")
+    _plugin_rule(h, "tirith:plain-http-curl")
+    assert store.list_proposals("pending") == []
+    assert posted == []
+    assert store.approve_count("<terminal> (plugin approval rule)") == 0  # nothing recorded at all
+    assert store.last_event() is None
+
+
+def test_plugin_label_alone_is_detected_without_pattern_key():
+    h, store, posted = _notifying(threshold=1)
+    h.on_post_approval_response(command="<terminal>  (plugin approval rule)", choice="always")
+    h.on_post_approval_response(command="<browser_navigate> (plugin approval rule)", choice="once")
+    assert store.list_proposals("pending") == [] and posted == []
+
+
+def test_other_non_command_gates_are_never_learned():
+    h, store, posted = _notifying(threshold=1)
+    for key, cmd in (("cua:click:background", "computer_use: click (10, 20)"),
+                     ("ssh_config_write", "<write to ~/.ssh/config>"),
+                     ("protected_instruction_file", "AGENTS.md"),
+                     ("execute_code", "import os\nos.system('ls')"),
+                     ("mcp_elicitation", "Server wants your email"),
+                     ("editor-0a1b2c", "Edit src/app.py")):
+        h.on_post_approval_response(command=cmd, pattern_key=key, pattern_keys=[key], choice="always")
+    assert store.list_proposals("pending") == [] and posted == []
+
+
+def test_plugin_rule_pre_hook_explains_and_records_nothing():
+    h, store, _ = _notifying()
+    h.on_pre_approval_request(command=PLUGIN_LABEL, pattern_key="plugin_rule:delete file (rm)")
+    assert "plugin approval rule" in h.command("why")
+    assert store.last_event() is None
+
+
+def test_real_command_counting_still_proposes_once():
+    h, store, posted = _notifying(threshold=2)
+    _plugin_rule(h, "delete file (rm)")  # interleaved plugin rule must not disturb the real count
+    for _ in range(2):
+        h.on_post_approval_response(command="docker stop web", pattern_key="stop/restart container",
+                                    pattern_keys=["stop/restart container"], choice="once")
+    pending = store.list_proposals("pending")
+    assert [p["proposed_entry"] for p in pending] == ["docker stop *"]
+    assert len(posted) == 1
+
+
+def test_counts_are_per_rule_never_pooled():
+    h, store, _ = _notifying(threshold=2)
+    h.on_post_approval_response(command="chmod 600 ./notes.txt", pattern_key="change permissions", choice="once")
+    h.on_post_approval_response(command="chmod 600 ./notes.txt", pattern_key="other rule", choice="once")
+    assert store.list_proposals("pending") == []
+    h.on_post_approval_response(command="chmod 600 ./notes.txt", pattern_key="change permissions", choice="once")
+    assert [p["proposed_entry"] for p in store.list_proposals("pending")] == ["chmod 600 ./notes.txt"]
+
+
+def test_counts_never_mix_owner_and_unknown_approvers():
+    h, store, posted = _notifying(threshold=2, owner_ids=["111"])
+    h.on_post_approval_response(command="chmod 600 ./a", pattern_key="perm", choice="once")          # keyboard owner
+    h.on_post_approval_response(command="chmod 600 ./a", pattern_key="perm", choice="once",
+                                user_id="999")                                                     # unknown id
+    assert store.list_proposals("pending") == []
+    h.on_post_approval_response(command="chmod 600 ./a", pattern_key="perm", choice="once", user_id="999")
+    assert store.list_proposals("pending") == [] and posted == []                                  # guests never propose
+    # is_owner=True alone is not enough: the owner lock goes by owner_ids, so counting does too.
+    for _ in range(2):
+        h.on_post_approval_response(command="chmod 600 ./c", pattern_key="perm", choice="once", user_id="555",
+                                    is_owner=True)
+    assert store.list_proposals("pending") == []
+    for _ in range(2):
+        h.on_post_approval_response(command="chmod 600 ./b", pattern_key="perm", choice="once", user_id="111")
+    assert [p["scope"] for p in store.list_proposals("pending")] == ["owner:111"]
+
+
+def test_exact_command_with_shell_operators_is_never_proposed():
+    h, store, posted = _notifying(threshold=1)
+    h.on_post_approval_response(command="chmod 600 ./a > /tmp/log", pattern_key="perm", choice="once")
+    assert store.list_proposals("pending") == [] and posted == []
+
+
+def _old_db_with_plugin_label():
+    """A 0.1.5 database as Neuron had it: plugin-rule decisions, one pending and one accepted label proposal."""
+    conn = sqlite3.connect(":memory:")
+    old = HabitStore(conn)
+    for rule in ("plugin_rule:delete file (rm)", "plugin_rule:tirith:x"):
+        old.record_decision(Decision(command=PLUGIN_LABEL, fingerprint=PLUGIN_LABEL, pattern_key=rule,
+                                     choice="once"))
+    old.record_decision(Decision(command="docker stop web", fingerprint="docker stop web",
+                                 pattern_key="stop/restart container", choice="once", generalized="docker stop *"))
+    pending_id = old.add_proposal(fingerprint=PLUGIN_LABEL, command=PLUGIN_LABEL, pattern_key="plugin_rule:tirith:x",
+                                  proposed_entry=PLUGIN_LABEL, reason="", approve_count=2)
+    real_id = old.add_proposal(fingerprint="docker stop web", command="docker stop web", pattern_key="k",
+                               proposed_entry="docker stop *", reason="", approve_count=2)
+    old.mark_promoted(fingerprint=PLUGIN_LABEL, command=PLUGIN_LABEL, allowlist_entry=PLUGIN_LABEL,
+                      approve_count=2, reason="accepted proposal #0")
+    return conn, pending_id, real_id
+
+
+def test_existing_db_plugin_label_proposals_are_ignored_on_load():
+    conn, pending_id, real_id = _old_db_with_plugin_label()
+    store = HabitStore(conn)  # what loading 0.1.6 does
+    assert store.get_proposal(pending_id)["status"] == "ignored"
+    assert store.get_proposal(real_id)["status"] == "pending"
+    assert store.approve_count(PLUGIN_LABEL) == 0
+    assert store.approve_count("docker stop web") == 1
+    # The accepted entry is not removed automatically.
+    assert PLUGIN_LABEL in store.habit_allowlist_entries()
+    h = Habit(config=lambda: {"mode": "enforce", "threshold": 2}, store_factory=lambda: store)
+    assert PLUGIN_LABEL not in h.command("proposals")
+    status = h.command("status")
+    assert "pending proposals (1):" in status
+    assert f"never matches a command; remove with /habit forget {PLUGIN_LABEL}" in status
+    assert "is ignored, not pending" in h.command(f"accept {pending_id}")
+
+
+def test_undo_removes_accepted_plugin_label():
+    conn, _, _ = _old_db_with_plugin_label()
+    store = HabitStore(conn)
+    removed = []
+    h = Habit(config=lambda: {"mode": "enforce"}, store_factory=lambda: store,
+              allowlist_remover=lambda entries: (removed.extend(entries), len(entries))[1])
+    out = h.command("undo")
+    assert removed == [PLUGIN_LABEL] and "removed" in out
+    assert store.habit_allowlist_entries() == []
+
+
+def test_forget_removes_accepted_plugin_label():
+    conn, _, _ = _old_db_with_plugin_label()
+    store = HabitStore(conn)
+    removed = []
+    h = Habit(config=lambda: {"mode": "enforce"}, store_factory=lambda: store,
+              allowlist_remover=lambda entries: (removed.extend(entries), len(entries))[1])
+    h.command(f"forget {PLUGIN_LABEL}")
+    assert removed == [PLUGIN_LABEL]
+
+
+def test_accept_refuses_a_plugin_label_proposal():
+    store = _store()
+    written = []
+    pid = store.add_proposal(fingerprint=PLUGIN_LABEL, command=PLUGIN_LABEL, pattern_key="plugin_rule:x",
+                             proposed_entry=PLUGIN_LABEL, reason="", approve_count=2)
+    h = Habit(config=lambda: {"mode": "enforce"}, store_factory=lambda: store, allowlist_writer=written.append)
+    out = h.command("accept all")
+    assert written == [] and "ignored" in out
+    assert store.get_proposal(pid)["status"] == "ignored"

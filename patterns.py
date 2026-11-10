@@ -57,6 +57,9 @@ def _has_shell_operators(command: str) -> bool:
     return False
 
 
+has_shell_operators = _has_shell_operators  # public name for runtime.py
+
+
 def _redirects_daemon(argv: list[str]) -> bool:
     for a in argv[1:]:
         if a in ("-H", "--host", "-c", "--context") or a.startswith(("--host=", "-H=", "--context=", "-c=")):

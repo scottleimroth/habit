@@ -54,7 +54,8 @@ Unattended runs (cron, gateway with no person, YOLO/oneshot) never call accept �
 
 ### Messaging gateway (Telegram / Discord / …)
 
-`/habit` is registered via `ctx.register_command`, so the same slash commands work on the gateway. On Telegram, type `/habit accept 1` (or `/habit_accept` autocomplete forms Hermes may expose). The reply text comes back in the chat. Gateway approvals count only when Hermes supplies an approver identity. Unidentified chat approvals (including Hermes 0.23 Matrix/Telegram events) are ignored. Local keyboard approvals still count. Only explicit accept writes the allowlist.
+`/habit` is registered via `ctx.register_command`, so the same slash commands work on the gateway. On Telegram, type `/habit accept 1` (or `/habit_accept` autocomplete forms Hermes may expose). The reply text comes back in the chat. Gateway approvals count only when Hermes supplies an approver identity, and only an owner's approvals (the id is in
+`owner_ids`, the same rule as the owner lock) can lead to a proposal; anyone else's are kept apart and never proposed. Unidentified chat approvals (including Hermes 0.23 Matrix/Telegram events) are ignored. Local keyboard approvals still count. Only explicit accept writes the allowlist.
 
 ### Owner-lock (gateway)
 
@@ -87,8 +88,22 @@ also allow `pytest --basetemp=<dir>` (deletes that directory's contents). So Hab
 container lifecycle commands above, and proposes everything else exactly as you approved it. An exact command that
 contains `*`, `?` or `[` is written with those characters bracketed (`ls [*].py`), so Hermes matches only that command.
 
-Hermes 0.23 asks for approval only on its own dangerous-command list, so Habit only ever sees those commands; in
-practice that is mostly container lifecycle and repeats of other flagged commands you keep approving.
+Hermes 0.23 asks for approval on shell commands only when they are on its own dangerous-command list, so those are
+the only commands Habit learns; in practice that is mostly container lifecycle and repeats of other flagged commands
+you keep approving. Approvals are counted per Hermes rule and per approver, so different rules never add up.
+An exact command containing a shell operator (`|`, `;`, `&`, `>`, `<`, backtick, `$(`) is never proposed, because
+Hermes never matches an allowlist entry against such a command.
+
+The same approval hooks also fire for prompts that are not shell commands. Habit never learns from them: nothing is
+recorded, counted, proposed or posted. These are plugin `pre_tool_call` rules (`plugin_rule:` keys, shown as
+`<tool> (plugin approval rule)`), computer_use actions, SSH config and protected-file writes, execute_code scripts,
+MCP elicitation and editor diffs. Those checks are meant to be seen by a person every time.
+
+**Upgrading from 0.1.5 or earlier:** older versions could learn from plugin approval rules and propose the label
+`<terminal> (plugin approval rule)`. It never matched a command, so it allowed nothing. On load, 0.1.6 forgets those
+recorded approvals and marks such pending proposals ignored. An accepted label stays in `command_allowlist` until you
+remove it; `/habit status` points it out, and `/habit forget <terminal> (plugin approval rule)` (or `/habit undo` if
+it was the last accept) removes it.
 
 **Upgrading from 0.1.2:** entries 0.1.2 proposed and you accepted (for example `pytest *`, `git log *`, `cat ./*`)
 stay in `command_allowlist` until you remove them. `/habit status` lists them; `/habit forget <entry>` removes one
@@ -129,6 +144,7 @@ Then `hermes plugins disable habit`. Allowlist edits take effect on the next app
 ## Safety / disclosure
 
 - Observer hooks only — if Habit errors, Hermes asks as usual.
+- Plugin-escalated approvals (plugin `pre_tool_call` rules) and other non-command prompts are never learned.
 - Smart/AI approver decisions are never learned. Hermes 0.23 identifies them with `surface=smart`, `decided_by=aux_llm`, and `choice=smart_approve|smart_deny`; any one marker is enough to ignore the event. Human decisions after escalation still count.
 - **Never auto-writes `command_allowlist`.** Human `/habit accept` only.
 - Never proposes the never-auto set.
