@@ -20,7 +20,11 @@ def _open_store():
 
 def register(ctx):
     try:
-        habit = Habit(config=ctx.get_config, store_factory=_open_store)
+        habit = Habit(
+            config=ctx.get_config,
+            store_factory=_open_store,
+            poster=lambda text: ctx.post_message(text),  # public API, Hermes 0.23+; in-process only
+        )
         ctx.register_hook("pre_approval_request", habit.on_pre_approval_request)
         ctx.register_hook("post_approval_response", habit.on_post_approval_response)
         ctx.register_command(

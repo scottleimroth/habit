@@ -23,6 +23,7 @@ from .patterns import exact_entry, generalize, matches_learned
 from .policy import after_decision, ask_reason
 from .store import Decision, HabitStore
 from .never_auto import is_never_auto, never_auto_reason
+from .notify import Announcer, proposal_message
 from .owner_gate import check_owner_lock, is_messaging_surface
 
 log = logging.getLogger("plugin.habit")
@@ -60,6 +61,8 @@ class Habit:
         allowlist_writer: Optional[Callable[[str], None]] = None,
         allowlist_remover: Optional[Callable[[list[str]], int]] = None,
         project_root: Optional[str] = None,
+        poster: Optional[Callable[[str], Any]] = None,
+        notify_in_background: bool = True,
     ):
         self._config = config
         self._store_factory = store_factory
@@ -68,6 +71,8 @@ class Habit:
         self._allowlist_remover = allowlist_remover
         self._project_root = project_root
         self._last_ask: dict[str, Any] = {}
+        # poster is ctx.post_message: one line into the chat the approval came from.
+        self._announcer = Announcer(poster, background=notify_in_background)
 
     def _db(self) -> HabitStore:
         if self._store is None:
@@ -181,7 +186,7 @@ class Habit:
             )
             # Propose only — never write allowlist here (rule 12).
             if result.action == "propose":
-                store.add_proposal(
+                pid, created = store.create_proposal(
                     fingerprint=fp,
                     command=command,
                     pattern_key=pattern_key,
@@ -190,8 +195,17 @@ class Habit:
                     approve_count=approve_n,
                     scope=scope,
                 )
+                if created and _cfg(self._config, "notify", True) is not False:
+                    self._announce(pid, command, entry, approve_n)
         except Exception:
             log.exception("habit post_approval_response failed — Hermes will ask as usual")
+
+    def _announce(self, pid: int, command: str, entry: str, approve_n: int) -> None:
+        try:
+            text = proposal_message(proposal_id=pid, command=command, entry=entry, approve_count=approve_n)
+            self._announcer.announce(pid, text)
+        except Exception:
+            log.exception("habit could not announce proposal #%s; it is still in /habit proposals", pid)
 
     def _accept_one(self, store: HabitStore, prop: dict) -> str:
         entry = prop["proposed_entry"]
@@ -260,10 +274,13 @@ class Habit:
                 if not pending:
                     lines.append("  (none)")
                 for p in pending:
+                    told = self._announcer.outcomes.get(p["id"])
                     lines.append(
                         f"  #{p['id']} [{p['approve_count']}×] {p['proposed_entry'][:100]} "
-                        f"(from {p['command'][:50]})"
+                        f"(from {p['command'][:50]})" + (f" — {told}" if told else "")
                     )
+                if pending:
+                    lines.append("  reply /habit accept <id> to stop being asked, or /habit reject <id>")
                 lines.append(f"accepted on allowlist ({len(promos)}):")
                 if not promos:
                     lines.append("  (none yet)")

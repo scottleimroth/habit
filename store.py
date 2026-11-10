@@ -310,7 +310,11 @@ class HabitStore:
             self._conn.execute("UPDATE promotions SET undone=1 WHERE undone=0")
 
 
-    def add_proposal(
+    def add_proposal(self, **kwargs) -> int:
+        """Create a pending proposal (or return the pending one). Does NOT write command_allowlist."""
+        return self.create_proposal(**kwargs)[0]
+
+    def create_proposal(
         self,
         *,
         fingerprint: str,
@@ -320,8 +324,8 @@ class HabitStore:
         reason: str,
         approve_count: int,
         scope: str = "owner",
-    ) -> int:
-        """Create a pending proposal. Does NOT write command_allowlist."""
+    ) -> tuple[int, bool]:
+        """(id, created): created is False when the same entry was already pending. No allowlist write."""
         now = time.time()
         with self._lock, self._conn:
             row = self._conn.execute(
@@ -333,7 +337,7 @@ class HabitStore:
                     "proposed", fingerprint, command, pattern_key or "", "",
                     f"already pending #{row[0]}: {proposed_entry}", proposed_entry, now,
                 )
-                return int(row[0])
+                return int(row[0]), False
             cur = self._conn.execute(
                 "INSERT INTO proposals(created_at, fingerprint, command, pattern_key, "
                 "proposed_entry, reason, approve_count, scope, status) "
@@ -347,7 +351,7 @@ class HabitStore:
                 f"proposed #{pid}: {proposed_entry} — /habit accept {pid}",
                 proposed_entry, now,
             )
-            return pid
+            return pid, True
 
     def list_proposals(self, status: str = "pending", limit: int = 50) -> list[dict]:
         with self._lock, self._conn:

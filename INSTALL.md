@@ -24,6 +24,7 @@ plugins:
         mode: enforce          # example: enforce + owner lock
         threshold: 2
         owner_ids: ["YOUR_TELEGRAM_OR_DISCORD_USER_ID"]
+        notify: true           # post one chat message when a proposal is created (default)
 ```
 
 `owner_ids` gates `/habit accept|reject|undo|forget|uninstall` on the messaging gateway.

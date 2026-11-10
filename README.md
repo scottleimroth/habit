@@ -21,6 +21,26 @@ No extra LLM. Deterministic.
 | `observe` (**default**) | record decisions; `/habit why` works; **no proposals, no allowlist writes** |
 | `enforce` | after `threshold` matching approvals, create a **pending proposal**; still no write until `/habit accept` |
 
+## Habit tells you when it has an offer
+
+When enforce mode creates a proposal, Habit posts one message in the chat where you just approved:
+
+```text
+Habit: you've approved `docker stop web` 2 times. Reply /habit accept 1 to stop being asked for `docker stop *` (any container, any options), or /habit reject 1 to keep asking.
+```
+
+For any other command it says "to stop being asked for exactly this command". It is sent once per proposal and
+never in observe mode. Posting accepts nothing; only your `/habit accept` writes the allowlist. Pending proposals
+also show in `/habit status`, with whether the message was posted. Turn the message off with
+`hermes config set plugins.entries.habit.settings.notify false`.
+
+It uses Hermes's public `ctx.post_message`, which needs a running Hermes gateway in the same process: a messaging
+chat, or a Desktop/TUI chat attached to the gateway. A process with no running gateway (for example a standalone
+`hermes serve`), or `plugins.isolation: host`, cannot post. Habit then logs the failure and the proposal stays in
+`/habit proposals` and `/habit status`. The post runs on its own short-lived thread, so it never delays the
+approval. Chat approvals without an approver identity (Hermes 0.23 Matrix and Telegram) are still not learned,
+so no proposal and no message come from them.
+
 ## Confirm step (required)
 
 ```text
@@ -78,7 +98,7 @@ and `/habit uninstall` removes every entry Habit added.
 
 ```text
 /habit why          why it asked / pending proposals
-/habit status       pending + accepted
+/habit status       pending (and whether Habit told you in chat) + accepted
 /habit forget <p>   drop accepted entry + allowlist row
 /habit undo         undo last accept
 /habit uninstall    remove every allowlist entry Habit added + clear pending
@@ -113,6 +133,7 @@ Then `hermes plugins disable habit`. Allowlist edits take effect on the next app
 - **Never auto-writes `command_allowlist`.** Human `/habit accept` only.
 - Never proposes the never-auto set.
 - No telemetry. Local SQLite via `plugin_db`. No secrets from disk.
+- Chat message: when it creates a proposal, Habit posts one line into the conversation where you approved, through Hermes's public `ctx.post_message` (Hermes picks the chat; Habit never names one). It runs on a short-lived thread and never retries. Set `notify: false` to turn it off.
 - Disclosure: accept and removal persist `command_allowlist` through `hermes_cli.config.load_config` / `save_config`. Hermes 0.23 has no public single-entry revocation helper; its bulk saver merges grants instead of replacing the list. Habit does not write private approval state or override core functions.
 - Non-plugin-API dependencies: `gateway.session_context.get_session_env` reads caller identity and surface fields (read-only). Habit classifies unknown surfaces as messaging using its own local allowlist of keyboard/service surfaces. This context reader and config persistence are Hermes implementation helpers, not stable plugin context APIs. Next-check synchronisation was tested on 0.23.0. No underscore-prefixed core helpers are imported.
 - Config write errors are reported, with no raw-YAML fallback. Accept stays pending if saving fails. Keep allowlist edits serial: read/modify/save is not a cross-process transaction.

@@ -1,8 +1,8 @@
 name: habit
-version: 0.1.3
+version: 0.1.4
 description: Learns safe command patterns from your approve/deny clicks (e.g. pytest
-  *, docker stop *). After a threshold, proposes a pattern; a human must /habit
-  accept before writing Hermes command_allowlist. Never auto-approves. Never widens
+  *, docker stop *). After a threshold, proposes a pattern and says so once in the chat;
+  a human must /habit accept before writing Hermes command_allowlist. Never auto-approves. Never widens
   deletes/network/secrets. Default observe.
 author: Habit contributors
 manifest_version: 2
@@ -40,6 +40,12 @@ config_schema:
     default: true
     label: Show notes
     description: When enforce proposes a command, mention it in /habit status / why.
+  notify:
+    type: bool
+    default: true
+    label: Tell me in chat
+    description: When enforce creates a proposal, post one message in the chat where you approved,
+      with the /habit accept and /habit reject commands for it. Sent once per proposal. Never accepts anything.
   owner_ids:
     type: list
     default: []

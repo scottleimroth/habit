@@ -646,3 +646,221 @@ def test_glob_character_command_round_trip(tmp_path: Path):
 def test_never_auto_relative_shadow_path():
     assert is_never_auto(None, "cat ./../../etc/shadow")
     assert is_never_auto(None, "head ../../etc/sudoers")
+
+
+# ---- 0.1.4: tell the user in chat when a proposal is created -------------------------------------------------
+
+class _Handle:
+    def __init__(self, ok=True, error=None, result=None):
+        self.ok, self.error = ok, error
+        self.result = result if result is not None else {"ok": ok, "message_id": "m1"}
+
+
+def _notifying(mode="enforce", threshold=2, poster=None, **extra):
+    store = _store()
+    posted = []
+
+    def default_poster(text):
+        posted.append(text)
+        return _Handle()
+
+    h = Habit(
+        config=lambda: {"mode": mode, "threshold": threshold, **extra},
+        store_factory=lambda: store,
+        allowlist_writer=lambda e: None,
+        poster=poster or default_poster,
+        notify_in_background=False,
+    )
+    return h, store, posted
+
+
+def test_notify_posts_once_when_proposal_created():
+    h, store, posted = _notifying()
+    h.on_post_approval_response(command="docker stop web", choice="once")
+    assert posted == []  # below threshold: nothing to offer yet
+    h.on_post_approval_response(command="docker stop web", choice="once")
+    pending = store.list_proposals("pending")
+    assert len(pending) == 1
+    pid = pending[0]["id"]
+    assert posted == [
+        f"Habit: you've approved `docker stop web` 2 times. Reply /habit accept {pid} to stop being asked for "
+        f"`docker stop *` (any container, any options), or /habit reject {pid} to keep asking."
+    ]
+
+
+def test_notify_exact_entry_wording():
+    h, store, posted = _notifying()
+    for _ in range(2):
+        h.on_post_approval_response(command="chmod 600 ./notes.txt", choice="once")
+    pid = store.list_proposals("pending")[0]["id"]
+    assert posted == [
+        f"Habit: you've approved `chmod 600 ./notes.txt` 2 times. Reply /habit accept {pid} to stop being asked "
+        f"for exactly this command, or /habit reject {pid} to keep asking."
+    ]
+
+
+def test_notify_never_repeats_for_same_proposal():
+    h, store, posted = _notifying()
+    for _ in range(5):
+        h.on_post_approval_response(command="docker stop web", choice="once")
+    # Another container lands on the same pending `docker stop *` proposal: still no second message.
+    h.on_post_approval_response(command="docker stop db", choice="once")
+    assert len(store.list_proposals("pending")) == 1
+    assert len(posted) == 1
+    # A store-level repeat (same pending entry) is never re-announced either.
+    pid, created = store.create_proposal(fingerprint="docker stop web", command="docker stop web", pattern_key="",
+                                         proposed_entry="docker stop *", reason="", approve_count=9)
+    assert created is False and pid == store.list_proposals("pending")[0]["id"]
+    assert len(posted) == 1
+
+
+def test_notify_new_proposal_after_reject_is_announced_once():
+    h, store, posted = _notifying()
+    for _ in range(2):
+        h.on_post_approval_response(command="docker restart web", choice="once")
+    first = store.list_proposals("pending")[0]["id"]
+    h.command(f"reject {first}")
+    h.on_post_approval_response(command="docker restart web", choice="once")
+    second = store.list_proposals("pending")[0]["id"]
+    assert second != first
+    assert [m.count(f"accept {second}") for m in posted] == [0, 1]
+
+
+def test_notify_failure_is_tolerated_and_proposal_stays():
+    def failing(text):
+        return _Handle(ok=False, error="no_conversation")
+
+    h, store, _ = _notifying(poster=failing)
+    for _ in range(2):
+        h.on_post_approval_response(command="docker stop web", choice="once")
+    assert len(store.list_proposals("pending")) == 1
+    assert "no_conversation" in h.command("status")
+    assert "docker stop *" in h.command("proposals")
+
+
+def test_notify_raising_poster_never_breaks_approval_flow():
+    calls = []
+
+    def boom(text):
+        calls.append(text)
+        raise RuntimeError("adapter exploded")
+
+    h, store, _ = _notifying(poster=boom)
+    for _ in range(3):
+        assert h.on_post_approval_response(command="docker stop web", choice="once") is None
+    assert len(calls) == 1
+    assert len(store.list_proposals("pending")) == 1
+    assert store.approve_count("docker stop web") == 3
+    assert "adapter exploded" in h.command("status")
+
+
+def test_notify_undelivered_local_notice_counts_as_not_posted():
+    h, store, _ = _notifying(poster=lambda t: _Handle(result={"ok": True, "message_id": "k", "delivered": False}))
+    for _ in range(2):
+        h.on_post_approval_response(command="docker stop web", choice="once")
+    assert "not posted: not_delivered" in h.command("status")
+
+
+def test_notify_does_not_block_the_hook():
+    import threading
+    import time
+    release = threading.Event()
+    store = _store()
+    h = Habit(config=lambda: {"mode": "enforce", "threshold": 1}, store_factory=lambda: store,
+              poster=lambda t: (release.wait(10), _Handle())[1])
+    began = time.monotonic()
+    h.on_post_approval_response(command="docker stop web", choice="once")
+    assert time.monotonic() - began < 1.0  # the post waits on its own thread, not the approval
+    release.set()
+    assert len(store.list_proposals("pending")) == 1
+
+
+def test_notify_background_thread_keeps_caller_context():
+    import contextvars
+    import threading
+    bound = contextvars.ContextVar("session_key", default="")
+    seen, done = [], threading.Event()
+
+    def poster(text):
+        seen.append(bound.get())
+        done.set()
+        return _Handle()
+
+    store = _store()
+    h = Habit(config=lambda: {"mode": "enforce", "threshold": 1}, store_factory=lambda: store, poster=poster)
+    bound.set("agent:main:matrix:dm:!room")
+    h.on_post_approval_response(command="docker stop web", choice="once")
+    assert done.wait(5)
+    assert seen == ["agent:main:matrix:dm:!room"]
+
+
+def test_notify_nothing_in_observe_mode():
+    h, store, posted = _notifying(mode="observe")
+    for _ in range(5):
+        h.on_post_approval_response(command="docker stop web", choice="once")
+    assert store.list_proposals("pending") == []
+    assert posted == []
+
+
+def test_notify_can_be_turned_off():
+    h, store, posted = _notifying(notify=False)
+    for _ in range(2):
+        h.on_post_approval_response(command="docker stop web", choice="once")
+    assert len(store.list_proposals("pending")) == 1
+    assert posted == []
+
+
+def test_notify_never_accepts_or_writes():
+    written = []
+    store = _store()
+    h = Habit(config=lambda: {"mode": "enforce", "threshold": 1}, store_factory=lambda: store,
+              allowlist_writer=written.append, poster=lambda t: _Handle(), notify_in_background=False)
+    h.on_post_approval_response(command="docker stop web", choice="always")
+    assert written == []
+    assert store.list_promotions() == []
+    assert [p["status"] for p in store.list_proposals("pending")] == ["pending"]
+
+
+def test_notify_nothing_for_never_auto_or_smart():
+    h, store, posted = _notifying(threshold=1)
+    h.on_post_approval_response(command="rm -rf /tmp/x", pattern_key="recursive delete", choice="once")
+    h.on_post_approval_response(command="docker stop web", choice="smart_approve", decided_by="aux_llm")
+    assert posted == []
+
+
+def test_status_lists_pending_with_how_to_answer():
+    h, store, posted = _notifying()
+    for _ in range(2):
+        h.on_post_approval_response(command="docker stop web", choice="once")
+    pid = store.list_proposals("pending")[0]["id"]
+    status = h.command("status")
+    assert "pending proposals (1):" in status
+    assert f"#{pid} [2×] docker stop *" in status
+    assert "posted in chat" in status
+    assert "/habit accept <id>" in status
+
+
+def test_register_uses_public_post_message():
+    import habit as pkg
+
+    class Ctx:
+        def __init__(self):
+            self.hooks, self.commands = {}, {}
+
+        def get_config(self, key, default=None):
+            return default
+
+        def register_hook(self, name, cb, **kw):
+            self.hooks[name] = cb
+
+        def register_command(self, name, handler, **kw):
+            self.commands[name] = handler
+
+        def post_message(self, text):
+            return _Handle()
+
+    ctx = Ctx()
+    h = pkg.register(ctx)
+    assert h is not None
+    assert isinstance(h._announcer._poster("hi"), _Handle)
+    assert set(ctx.hooks) == {"pre_approval_request", "post_approval_response"}

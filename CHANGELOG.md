@@ -1,3 +1,18 @@
+## 0.1.4
+
+- Habit now tells you when it has an offer. When enforce mode creates a proposal it posts one message in the chat
+  where you approved, for example: "Habit: you've approved `docker stop web` 2 times. Reply /habit accept 1 to stop
+  being asked for `docker stop *` (any container, any options), or /habit reject 1 to keep asking."
+- Sent once per proposal, never in observe mode, never for never-auto or smart-approver decisions. Posting accepts
+  nothing. New setting `notify` (default true) turns it off.
+- Uses only the public `ctx.post_message` (Hermes 0.23). The post runs on a short-lived thread that keeps the hook's
+  session, so a slow gateway never delays the approval. A failed post is logged; the proposal stays in
+  `/habit proposals`, and `/habit status` shows whether the message was posted.
+- `/habit status` adds how to answer pending proposals.
+- Tests: message on creation, exact and glob wording, no repeats (same entry, other container, store re-add), new
+  proposal after reject, failed, raising and undelivered posts tolerated, hook not blocked, session context kept,
+  nothing in observe mode or with notify off, nothing written to the allowlist.
+
 ## 0.1.3
 
 Review of 973100ab (NousResearch/hermes-agent#151289):
